@@ -13,7 +13,7 @@ phase: [design, build, review, operate]
 frameworks: [NIST-AI-RMF-1.0, OWASP-LLM02-2025]
 difficulty: intermediate
 time_estimate: "30-60min"
-version: "1.0.0"
+version: "1.1.0"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -76,6 +76,9 @@ Before beginning the assessment, gather the following. If any item is unavailabl
 | Data processing agreements (DPAs) | Legal/compliance documentation | Establishes legal basis for data processing |
 | Privacy policy | Public-facing policy documents | Defines commitments to users about data handling |
 | Data retention policies | Internal governance docs, code configs | Determines how long AI-processed data persists |
+| Derived AI data inventory | Vector database schema, chunk manifests, embedding pipelines, cache configuration | Shows where source personal data may persist after AI ingestion |
+| Retrieval authorization model | RAG service code, middleware, ACL service, tenant filters | Proves whether current access checks protect retrieved content |
+| Deletion job and audit evidence | Erasure workers, tombstone tables, queue logs, reindex jobs | Confirms deletion propagates to embeddings, caches, replicas, and audit records |
 | Logging configuration | Application code, infrastructure configs | Reveals what prompt/completion data is captured |
 | Training/fine-tuning data documentation | Data pipeline docs, dataset cards | Identifies personal data in training corpus |
 | Consent management implementation | Frontend code, API code, database schemas | Shows how user consent is captured and enforced |
@@ -248,7 +251,9 @@ For each source document or data subject deletion path, require evidence that de
 | Retrieval metadata and ACL index | Current entitlement, group, tenant, and document ACL state is refreshed or invalidated | Retrieval uses stale ingest-time ACL metadata |
 | Prompt/reranker caches | Cached contexts and reranker results are invalidated for deleted sources | Deleted source text can still appear from cache |
 | Analytics/evaluation copies | Derived datasets have retention limits and deletion handling | Evaluation copies retain personal data indefinitely |
-| Backups/replicas | Restore window and replica propagation are documented | Replicas remain active retrieval surfaces after deletion |
+| Backups and snapshots | Restore window, access restrictions, purge deadline, and re-delete-on-restore behavior are documented | Restored data can return to active retrieval after deletion |
+| Regional replicas | Region list, propagation state, lag SLA, and failed-region escalation path are documented | A replica remains an active retrieval surface after deletion |
+| Not Evaluable reason | Missing vector schema, opaque managed vector service, unavailable queue logs, or missing backup policy is recorded | Reviewer silently treats missing evidence as passing |
 
 **Retrieval Authorization Evidence:**
 
@@ -261,6 +266,7 @@ Required evidence:
 - Group, role, and entitlement changes invalidate or refresh vector metadata before old documents can be retrieved.
 - Multi-tenant stores use namespace or partition controls plus explicit authorization filters; do not rely on namespace alone.
 - The report records `Not Evaluable` when the reviewer cannot trace the source document ID to chunk IDs and vector IDs.
+- Negative tests prove cross-tenant, revoked-user, and deleted-document retrieval fails closed instead of returning unfiltered matches.
 
 **What constitutes a finding:**
 
@@ -457,9 +463,25 @@ user input -> prompt assembly -> LLM API -> completion -> output -> logging/stor
 - **Location:** [file path, configuration, or architectural component]
 - **Description:** [What the privacy risk is and why it matters]
 - **Evidence:** [Code pattern, configuration, or architectural observation]
+- **Derived AI data affected:** [source document, chunks, embeddings, caches, backups, replicas, analytics]
+- **Deletion propagation status:** [complete / partial / missing / Not Evaluable, with tombstone, queue job, or audit evidence]
+- **Retrieval authorization evidence:** [tenant filter, user/document ACL, source-of-truth check, fail-closed behavior, negative test]
+- **Stale exposure window:** [maximum time deleted or unauthorized data remains actively retrievable]
 - **Impact:** [What personal data is at risk and for how many data subjects]
 - **Recommendation:** [Specific remediation with regulatory alignment]
 - **Priority:** [P0 / P1 / P2 / P3]
+
+## Vector Deletion Propagation Matrix
+
+| Source ID | Tenant | Chunks | Embeddings | Caches | Backups | Replicas | Tombstone/Job | Result |
+|---|---|---|---|---|---|---|---|---|
+| [doc-123] | [tenant-a] | [deleted/tombstoned] | [delete count or filter] | [invalidated] | [restore window] | [region status] | [job-id] | [Pass/Fail/Not Evaluable] |
+
+## Retrieval Authorization Evidence
+
+| Query Path | Tenant Filter | User/Document ACL | Source-of-Truth Check | Fail Closed | Negative Test |
+|---|---|---|---|---|---|
+| [rag/search endpoint] | [field/namespace] | [policy/service] | [yes/no] | [yes/no] | [pass/fail/Not Evaluable] |
 
 ## Privacy Control Summary
 
@@ -511,6 +533,10 @@ user input -> prompt assembly -> LLM API -> completion -> output -> logging/stor
 4. **Conflating data minimization with data deletion.** Data minimization (collecting only what is necessary) is a design-time principle. Data deletion (removing data when it is no longer needed or when a subject requests erasure) is an operational requirement. Both are needed. Many teams implement minimization at the application layer but fail to propagate deletion to downstream AI data stores (vector databases, training dataset snapshots, model checkpoints, conversation logs, analytics pipelines).
 
 5. **Ignoring model memorization as a privacy risk.** Organizations that use pre-trained or fine-tuned models often do not test for memorization of personal data. A model that has memorized PII from its training corpus is effectively a data store containing personal data -- it can reproduce that data on specific prompts. This has regulatory implications: if the model contains memorized PII of EU residents, GDPR obligations apply to the model weights themselves, not just the training dataset.
+
+6. **Trusting ingest-time retrieval metadata after access changes.** RAG systems often stamp tenant or ACL metadata at ingestion and later assume it is still correct. Query-time retrieval must check the current source of truth because group membership, subscriptions, document entitlements, consent, and deletion state can change after embeddings are created.
+
+7. **Deleting the source row while leaving active derived stores.** Source deletion is incomplete if chunks, embeddings, reranker caches, prompt caches, analytics copies, backups, or regional replicas can still return or reconstruct personal data. Require propagation evidence, tombstone or job IDs, and stale-retrieval tests.
 
 ---
 
