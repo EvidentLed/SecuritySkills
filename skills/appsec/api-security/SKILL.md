@@ -11,7 +11,7 @@ phase: [design, build, review]
 frameworks: [OWASP-API-Security-2023, OWASP-ASVS]
 difficulty: intermediate
 time_estimate: "20-40min"
-version: "1.0.0"
+version: "1.0.1"
 author: unitoneai
 license: MIT
 allowed-tools: Read, Grep, Glob
@@ -92,7 +92,7 @@ The final review output must be structured as follows:
 **API Style:** [REST / GraphQL / gRPC / Hybrid]
 **Specification:** [OpenAPI spec path, if applicable]
 **Date:** [review date]
-**Reviewer:** AI Agent -- api-security skill v1.0.0
+**Reviewer:** AI Agent -- api-security skill v1.0.1
 
 ### Summary
 
@@ -181,6 +181,42 @@ Deeply nested or highly complex queries can exhaust server resources (API4:2023)
 - **Query complexity scoring** -- assign cost weights to fields and reject queries exceeding a threshold.
 - **Batch query limits** -- restrict the number of queries in a single request (query batching/aliasing).
 
+### GraphQL Batch Execution and Alias Abuse
+
+GraphQL batching can turn one HTTP request into many resolver executions. Reviewers must prove that the server counts every operation, alias, and mutation attempt against abuse controls instead of applying limits only once per HTTP request.
+
+**Evidence required:**
+- Maximum operations per request, including array-style batching and multipart GraphQL uploads.
+- Alias count limits for sensitive fields such as `login`, password reset, invitation, checkout, search, and export operations.
+- Per-operation rate-limit accounting that records the caller, operation name, field name, and resolver cost.
+- Mutation batching policy: either disabled for sensitive mutations or capped with transaction/rollback behavior documented.
+- Error handling that fails closed when the query parser, cost analyzer, or rate-limit backend is unavailable.
+
+**Finding trigger:** report API4/API6 when a single GraphQL request can submit many credential attempts, expensive searches, exports, or state-changing mutations while consuming only one gateway request quota.
+
+#### GraphQL Batch Execution Abuse Matrix
+
+| Control | Required Evidence | Finding When Missing |
+|---|---|---|
+| Batch array cap | Maximum number of operations accepted in a JSON array request | Unbounded batched operations per request |
+| Alias cap | Parser or validation rule limiting aliases per operation | Alias-based brute force or business-flow abuse |
+| Resolver cost accounting | Per-field or per-operation cost charged to caller quota | Expensive resolvers bypass HTTP-level rate limits |
+| Sensitive mutation policy | Sensitive mutations cannot be batched or are transactionally capped | Bulk account/payment/state changes in one request |
+| Failure mode | Parser/cost/rate-limit failures reject or degrade safely | Limits silently disabled during analyzer errors |
+
+### JWT Algorithm Confusion Evidence
+
+JWT checks must reject algorithm confusion instead of trusting `alg` from the token header. This is especially important for APIs that accept both first-party and third-party identity providers, or both symmetric and asymmetric algorithms.
+
+**Evidence required:**
+- Algorithm allowlist evidence for each token issuer and audience.
+- Key-type binding evidence: RSA/ECDSA public keys are never reused as HMAC secrets.
+- Explicit rejection of `none`, unexpected `HS*`/`RS*` swaps, `jku`/`x5u` untrusted key URLs, and unknown `kid` values.
+- Issuer, audience, expiration, not-before, and clock-skew checks.
+- Negative-test evidence for `alg:none`, HS256-with-public-key, mismatched issuer/audience, expired tokens, and unknown key IDs.
+
+**Finding trigger:** report API2 when JWT validation accepts the token's requested algorithm dynamically, permits multiple algorithm families for one issuer without key binding, disables signature checks, or fetches verification keys from attacker-controlled header URLs.
+
 ### Field-Level Authorization
 
 Unlike REST, where authorization can be enforced per endpoint, GraphQL requires authorization at the resolver level. Every resolver that returns sensitive data or performs a privileged mutation must independently verify permissions.
@@ -209,11 +245,15 @@ Unlike REST, where authorization can be enforced per endpoint, GraphQL requires 
 
 3. **Treating GraphQL as inherently different from REST for security.** GraphQL shares all the same authorization, authentication, and injection risks as REST. The query language adds additional concerns (depth attacks, introspection, alias abuse) but does not eliminate any REST security requirements.
 
-4. **Testing only documented endpoints.** Shadow APIs -- endpoints that exist in code but are absent from documentation -- are among the most common sources of vulnerabilities. Always compare the routing table in code against the published API specification.
+4. **Counting only HTTP requests for GraphQL abuse.** A single GraphQL request can contain multiple operations or many aliases. Review the resolver execution count and field-level cost, not just gateway request totals.
 
-5. **Applying rate limiting only to authentication endpoints.** Every API endpoint requires rate limiting proportional to its cost and sensitivity. Data-heavy endpoints, search functions, and export operations are frequent targets for abuse even when properly authenticated.
+5. **Testing only documented endpoints.** Shadow APIs -- endpoints that exist in code but are absent from documentation -- are among the most common sources of vulnerabilities. Always compare the routing table in code against the published API specification.
 
-6. **Ignoring upstream API trust.** Data received from third-party APIs and even internal microservices must be validated before use. A compromised upstream service can inject SQL, XSS, or SSRF payloads through otherwise trusted data channels.
+6. **Applying rate limiting only to authentication endpoints.** Every API endpoint requires rate limiting proportional to its cost and sensitivity. Data-heavy endpoints, search functions, and export operations are frequent targets for abuse even when properly authenticated.
+
+7. **Letting JWT headers choose verification policy.** Treat token headers as untrusted input. The issuer configuration must choose the allowed algorithm and key material before verification.
+
+8. **Ignoring upstream API trust.** Data received from third-party APIs and even internal microservices must be validated before use. A compromised upstream service can inject SQL, XSS, or SSRF payloads through otherwise trusted data channels.
 
 ---
 

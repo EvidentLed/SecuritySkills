@@ -115,6 +115,8 @@ APIs are particularly susceptible to authentication flaws because they expose ma
 
 - Authentication endpoints without brute-force protection (rate limiting, account lockout, CAPTCHA).
 - JWT validation that is missing or incomplete -- no signature verification, no expiration check, acceptance of the `none` algorithm.
+- JWT algorithm confusion -- validation that trusts the token header's `alg`, allows both symmetric and asymmetric algorithms for one issuer, or reuses an RSA/ECDSA public key as an HMAC secret.
+- Untrusted JWT key discovery -- accepting `jku`, `x5u`, or arbitrary JWKS URLs from token headers instead of a configured issuer key set.
 - API keys transmitted in URL query strings (logged in server access logs, browser history, proxies).
 - Missing or weak token rotation -- refresh tokens that never expire or are not rotated on use.
 - Password reset or account recovery flows that leak tokens or allow enumeration.
@@ -126,6 +128,15 @@ APIs are particularly susceptible to authentication flaws because they expose ma
 # VULNERABLE: JWT signature not verified
 import jwt
 token_data = jwt.decode(token, options={"verify_signature": False})
+```
+
+```javascript
+// VULNERABLE: Algorithm confusion. The token header chooses verification mode.
+const header = jwt.decode(token, { complete: true }).header;
+const key = header.alg.startsWith("HS") ? PUBLIC_RSA_KEY : jwks.get(header.kid);
+const claims = jwt.verify(token, key, {
+  algorithms: ["HS256", "RS256"], // One issuer should not accept both families
+});
 ```
 
 ```javascript
@@ -153,6 +164,8 @@ paths:
 
 - Enforce rate limiting on all authentication endpoints (e.g., 5 attempts per minute per IP/account).
 - Validate JWT signatures using a strong algorithm (RS256, ES256). Reject `none` and `HS256` if RSA is expected (algorithm confusion attack).
+- Bind each issuer and audience to one explicit algorithm family and key source. Never select HMAC vs RSA/ECDSA verification based on the untrusted token header.
+- Reject untrusted `jku`/`x5u` header URLs, unknown `kid` values, `alg:none`, expired tokens, and issuer/audience mismatches.
 - Transmit API keys and tokens in HTTP headers (`Authorization` header), never in URL query strings.
 - Implement token expiration: access tokens (5-15 minutes), refresh tokens (hours to days with rotation).
 - Use `bcrypt`, `scrypt`, or `Argon2id` for password storage.
@@ -163,6 +176,8 @@ paths:
 - [ ] All authentication endpoints have brute-force protections (rate limiting, lockout).
 - [ ] JWTs are validated for signature, expiration (`exp`), issuer (`iss`), and audience (`aud`).
 - [ ] The `none` algorithm and algorithm confusion attacks are prevented by explicit algorithm allowlisting.
+- [ ] Each issuer has key-type binding evidence proving RSA/ECDSA public keys cannot be reused as HMAC secrets.
+- [ ] Negative tests cover `alg:none`, HS256-with-public-key, unexpected algorithm family, unknown `kid`, expired token, and wrong issuer/audience.
 - [ ] API keys and tokens are transmitted in headers, not query strings.
 - [ ] Refresh tokens are rotated on each use and revocable.
 - [ ] Service-to-service communication is explicitly authenticated.
@@ -263,6 +278,27 @@ query {
 ```
 
 ```javascript
+// VULNERABLE: Gateway counts one HTTP request while GraphQL executes every item.
+app.post("/graphql", rateLimit({ max: 10 }), async (req, res) => {
+  const operations = Array.isArray(req.body) ? req.body : [req.body];
+  const results = [];
+  for (const operation of operations) {
+    results.push(await graphql({ schema, source: operation.query, contextValue: req.user }));
+  }
+  res.json(results);
+});
+```
+
+```graphql
+# VULNERABLE: Alias batching turns one request into many credential attempts.
+mutation {
+  a1: login(email: "user@example.com", password: "guess1") { token }
+  a2: login(email: "user@example.com", password: "guess2") { token }
+  a3: login(email: "user@example.com", password: "guess3") { token }
+}
+```
+
+```javascript
 // VULNERABLE: No request body size limit
 app.use(express.json()); // Default limit may be very large or unconfigured
 ```
@@ -273,6 +309,8 @@ app.use(express.json()); // Default limit may be very large or unconfigured
 - Enforce maximum pagination size (e.g., `limit` capped at 100). Default to a reasonable page size (e.g., 20).
 - Set maximum request body sizes (`express.json({ limit: '1mb' })`).
 - For GraphQL: enforce query depth limits (e.g., max depth 5), complexity analysis (weighted field costs), and batch query limits.
+- Count GraphQL operations, aliases, and resolver cost against caller quotas. Do not rely on HTTP request count alone.
+- Disable batching for sensitive mutations such as login, password reset, invitation, checkout, transfer, export, or bulk update, or cap those mutations separately with transaction-safe failure behavior.
 - Set execution timeouts for database queries and downstream API calls.
 - Implement cost alerts and circuit breakers for operations that trigger billable third-party APIs.
 
@@ -282,6 +320,10 @@ app.use(express.json()); // Default limit may be very large or unconfigured
 - [ ] Pagination has a maximum page size enforced server-side.
 - [ ] Request body size limits are configured.
 - [ ] GraphQL queries have depth limits, complexity limits, and batch restrictions.
+- [ ] GraphQL batch arrays have a documented maximum operation count.
+- [ ] Alias counts are capped for sensitive fields and mutations.
+- [ ] Resolver-level cost is charged to the caller quota, not just the HTTP request.
+- [ ] Analyzer/rate-limit failures reject the request or degrade safely instead of executing without limits.
 - [ ] Database queries and downstream calls have execution timeouts.
 - [ ] Billable operations have cost controls and alerting.
 
