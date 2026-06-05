@@ -145,6 +145,7 @@ Assess whether personal data is exposed, leaked, or inadequately protected in th
 - System prompts that contain PII (customer names, account numbers, internal user data hardcoded for testing or personalization).
 - Model completions returned to users without PII scanning -- the model may reproduce PII from its context or generate plausible PII from memorized training data.
 - PII transmitted to third-party LLM APIs where the provider's data handling terms are unclear or insufficient.
+- RAG vector retrieval that relies only on ingest-time metadata rather than rechecking the current user's tenant, document ACL, consent state, and source-system authorization at query time.
 
 **Detection methods using allowed tools:**
 
@@ -162,6 +163,8 @@ Grep: "openai|anthropic|api.key|azure.openai|bedrock|vertex.ai|cohere|mistral" i
 
 # Check for access control in RAG retrieval
 Grep: "metadata_filter|access_control|permission|authorization|tenant" in **/*.{py,ts,js}
+Grep: "vector.search|similarity_search|query_vector|topK|namespace|where|filter" in **/*.{py,ts,js}
+Grep: "document_acl|source_document|entitlement|group_membership|tenant_id" in **/*.{py,ts,js,yaml,yml,json}
 ```
 
 **Model memorization risk:** LLMs can memorize and reproduce training data, including PII. Research by Carlini et al. (2021, 2023) demonstrated that GPT-2 and GPT-3 could be prompted to emit memorized training data including names, phone numbers, email addresses, and physical addresses. The risk is proportional to data frequency in training (repeated PII is more likely to be memorized) and inversely proportional to model size diversity (smaller fine-tuned models on narrow datasets memorize more). For fine-tuned models, this risk is especially acute -- the fine-tuning data is typically smaller and more repetitive than pre-training data, increasing memorization likelihood.
@@ -193,6 +196,8 @@ Assess whether AI-specific data stores have appropriate retention policies, dele
 - User session data (conversation history, context) persisted beyond the session without user consent or retention policy.
 - Backup systems that retain AI data beyond the primary store's retention period, undermining deletion compliance.
 - Audit logs containing full prompt/completion text retained longer than necessary.
+- Source document deletion handlers that do not also delete or tombstone derived chunks, embeddings, vector-store rows, retrieval metadata, prompt caches, reranker caches, analytics copies, and regional replicas.
+- Vector-store delete calls that are not scoped by source document ID, tenant ID, and current authorization state.
 
 **Detection methods using allowed tools:**
 
@@ -213,6 +218,11 @@ Grep: "log_prompt|log_completion|log_conversation|log_message|prompt_log|chat_lo
 # Check backup configurations
 Glob: **/backup*.{py,sh,yaml,yml}
 Grep: "backup|snapshot|archive" in **/*.{yaml,yml,json,toml}
+
+# Check deletion propagation to derived AI stores
+Grep: "delete|deleteMany|remove|purge|tombstone|reindex|invalidate" in **/*.{py,ts,js}
+Grep: "chunk_id|chunk_ids|vector_id|vector_ids|embedding_id|source_document_id|document_id" in **/*.{py,ts,js,yaml,yml,json}
+Grep: "vector_store|vectordb|embedding|rerank|prompt_cache|retrieval_cache" in **/*.{py,ts,js,yaml,yml,json}
 ```
 
 **AI-specific retention considerations:**
@@ -226,6 +236,32 @@ Grep: "backup|snapshot|archive" in **/*.{yaml,yml,json,toml}
 | RAG source documents | Original documents with full content including PII | Align retention with document source system; propagate deletions to vector store |
 | Evaluation/test datasets | May contain real user data used for testing | Anonymize or use synthetic data; apply same retention as production data |
 
+**Vector Store Deletion Propagation Evidence:**
+
+For each source document or data subject deletion path, require evidence that deletion propagates through all derived AI retrieval stores. Do not treat source-row deletion as sufficient by itself.
+
+| Derived Store | Evidence Required | Finding Trigger |
+|---|---|---|
+| Source document row | Source delete or tombstone event includes tenant and document identity | Delete path lacks tenant or document scope |
+| Chunk manifest | Chunk IDs linked to the source document are deleted, tombstoned, or excluded from retrieval | Chunks persist after source deletion |
+| Embedding/vector rows | Vector IDs are deleted or filtered by source document and tenant | Embeddings persist and remain queryable |
+| Retrieval metadata and ACL index | Current entitlement, group, tenant, and document ACL state is refreshed or invalidated | Retrieval uses stale ingest-time ACL metadata |
+| Prompt/reranker caches | Cached contexts and reranker results are invalidated for deleted sources | Deleted source text can still appear from cache |
+| Analytics/evaluation copies | Derived datasets have retention limits and deletion handling | Evaluation copies retain personal data indefinitely |
+| Backups/replicas | Restore window and replica propagation are documented | Replicas remain active retrieval surfaces after deletion |
+
+**Retrieval Authorization Evidence:**
+
+For every RAG retrieval path, verify that vector queries enforce source-of-truth authorization at query time. A static tenant namespace is not enough when document entitlements, group memberships, consent, subscriptions, or deletion state can change after ingestion.
+
+Required evidence:
+
+- Query filters include tenant, user or service identity, source document ID or ACL handle, and deletion/tombstone state.
+- Retrieval joins or checks the current authorization source before returning source text or chunks to the prompt.
+- Group, role, and entitlement changes invalidate or refresh vector metadata before old documents can be retrieved.
+- Multi-tenant stores use namespace or partition controls plus explicit authorization filters; do not rely on namespace alone.
+- The report records `Not Evaluable` when the reviewer cannot trace the source document ID to chunk IDs and vector IDs.
+
 **What constitutes a finding:**
 
 | Condition | Severity |
@@ -233,6 +269,8 @@ Grep: "backup|snapshot|archive" in **/*.{yaml,yml,json,toml}
 | No retention policy defined for conversation logs containing PII | High |
 | Vector store accumulates data indefinitely with no lifecycle management | High |
 | Deletion requests cannot be propagated to vector stores (embeddings persist after source deletion) | High |
+| RAG retrieval returns chunks without query-time tenant, document ACL, and deletion-state enforcement | High |
+| Source deletion removes the document but leaves chunks, embeddings, caches, or retrieval metadata queryable | High |
 | Fine-tuning datasets with PII retained without justification or retention period | Medium |
 | Backup systems retain AI data beyond primary retention period | Medium |
 | No automated purge mechanism for expired AI data | Medium |
@@ -430,6 +468,8 @@ user input -> prompt assembly -> LLM API -> completion -> output -> logging/stor
 | Training data privacy | [Yes/Partial/No] | [description] | [severity] |
 | PII in prompts/completions | [Yes/Partial/No] | [description] | [severity] |
 | Data retention | [Yes/Partial/No] | [description] | [severity] |
+| Vector deletion propagation | [Yes/Partial/No/Not Evaluable] | [description] | [severity] |
+| RAG retrieval authorization | [Yes/Partial/No/Not Evaluable] | [description] | [severity] |
 | Memorization risk | [Yes/Partial/No] | [description] | [severity] |
 | EU AI Act compliance | [Yes/Partial/No/N/A] | [description] | [severity] |
 | Consent management | [Yes/Partial/No] | [description] | [severity] |
