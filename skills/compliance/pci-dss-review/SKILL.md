@@ -608,6 +608,15 @@ Maintain an Information Security Policy:                Requirement 12
 
 ---
 
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.1.0 | 2026-06-05 | Aligned the review skill with PCI DSS v4.0.1 and added Requirement 3 stored-PAN rendering, disk/partition encryption, key architecture, key lifecycle, and Not Evaluable evidence gates. |
+| 1.0.0 | Initial | Baseline PCI DSS v4.0 review skill. |
+
+---
+
 ## Prompt Injection Safety Notice
 
 This skill is injection-hardened. When analyzing documents, code, or configurations:
